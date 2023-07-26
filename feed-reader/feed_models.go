@@ -2,6 +2,7 @@ package reader
 
 import (
 	"encoding/xml"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -99,7 +100,7 @@ func (ct *CustomTime) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error
 	d.DecodeElement(&v, &start)
 	t, err := time.Parse(layout, v)
 	if err != nil {
-		return err
+		return fmt.Errorf("error parsing custom time: %v", err)
 	}
 	*ct = CustomTime{t}
 	return nil

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"alibazlamit/feed-reader/database"
 	reader "alibazlamit/feed-reader/feed-reader"
 	"context"
 	"encoding/json"
@@ -9,27 +10,25 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var collection *mongo.Collection
 var ctx = context.TODO()
+var logger *log.Logger
 
 func main() {
-	err := reader.RunCronFeedReader(collection)
+	r := reader.NewReader(database.InitDatabase(), logger)
+
+	err := r.RunCronFeedReader()
 	if err != nil {
-		fmt.Println("Error running feed reader job:", err)
+		logger.Fatalf("Error running cron feed reader: %v", err)
 	}
 
-	// Create a new router instance
 	router := mux.NewRouter()
 
-	// Define the HTTP route handlers
-	router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, World!")
+	// API endpoints
+	router.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "PONG")
 	})
 	router.HandleFunc("/articles", getAllArticles).Methods("GET")
 	router.HandleFunc("/articles/{id}", getArticleByID).Methods("GET")
@@ -38,22 +37,9 @@ func main() {
 	fmt.Println("Server listening on http://localhost:8080")
 	err = http.ListenAndServe(":8080", router)
 	if err != nil {
-		fmt.Println("Error:", err)
+		logger.Fatalf("Error: %v", err)
 	}
 
-}
-
-func init() {
-	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017/")
-	client, err := mongo.Connect(ctx, clientOptions)
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	collection = client.Database("news_feed").Collection("news")
 }
 
 // GetAllArticles returns all articles from the MongoDB database in JSON format
@@ -61,22 +47,9 @@ func getAllArticles(w http.ResponseWriter, r *http.Request) {
 	responseObj := reader.NewsArticlesResponse{
 		Status: string(reader.Failure),
 	}
-	cursor, err := collection.Find(ctx, bson.M{})
+	articles, err := database.GetAllArticlesFromDB()
 	if err != nil {
-		handleError(w, http.StatusInternalServerError, "Error retrieving articles", err)
-		return
-	}
-	defer cursor.Close(ctx)
-
-	var articles []reader.NewsArticleInformationMongoDB
-	for cursor.Next(ctx) {
-		var article reader.NewsArticleInformationMongoDB
-		err := cursor.Decode(&article)
-		if err != nil {
-			handleError(w, http.StatusInternalServerError, "Error decoding articles", err)
-			return
-		}
-		articles = append(articles, article)
+		handleError(w, http.StatusBadRequest, "Error retrieving articles", err)
 	}
 	responseObj = reader.NewsArticlesResponse{
 		Data:   articles,
@@ -96,50 +69,36 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := bson.M{"_id": objectID}
-	var article reader.NewsArticleInformationMongoDB
-	err = collection.FindOne(ctx, filter).Decode(&article)
+	article, err := database.GetArticleByIDFromDB(objectID)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			handleError(w, http.StatusNotFound, "Article not found", err)
-			return
-		}
-		handleError(w, http.StatusInternalServerError, "Error retrieving article", err)
-		return
+		handleError(w, http.StatusBadRequest, "Error retrieving article", err)
 	}
 
 	responseObj := reader.NewsArticleResponse{
 		Status: string(reader.Success),
-		Data:   article,
+		Data:   *article,
 	}
 	handleSuccess(w, http.StatusOK, responseObj)
 }
 
 func handleError(w http.ResponseWriter, statusCode int, message string, err error) {
-	// Log the error (you can use a logger library for proper error logging)
-	fmt.Println("Error:", err)
-
-	// Prepare the response object
+	logger.Printf("Error: %v", err)
 	responseObj := reader.NewsArticlesResponse{
 		Error:  message,
 		Status: string(reader.Failure),
 	}
 
-	// Encode the response object and send the response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(responseObj); err != nil {
-		// If encoding the error response fails, fallback to simple text response
 		w.Write([]byte(message))
 	}
 }
 
 func handleSuccess(w http.ResponseWriter, statusCode int, responseObj interface{}) {
-	// Encode the response object and send the response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(responseObj); err != nil {
-		// Handle the error and send response
 		handleError(w, http.StatusInternalServerError, "Error encoding response", err)
 		return
 	}

@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -16,17 +17,37 @@ import (
 )
 
 const (
-	NEWS_ARTICLE_KEY  = "NewsArticleID"
-	ALL_ARTICLES_FEED = "https://www.htafc.com/api/incrowd/getnewlistinformation?count=50"
-	ONE_ARTICLE_FEED  = "https://www.htafc.com/api/incrowd/getnewsarticleinformation?id="
-	WORKERS           = 10
+	NEWS_ARTICLE_KEY     = "NewsArticleID"
+	ALL_ARTICLES_FEED    = "https://www.htafc.com/api/incrowd/getnewlistinformation?count=50"
+	ONE_ARTICLE_FEED     = "https://www.htafc.com/api/incrowd/getnewsarticleinformation?id="
+	WORKERS              = 3
+	CRON_JOB_INTERVAL_MS = 300000
 )
+
+type Reader struct {
+	dbCollection *mongo.Collection
+	logger       *log.Logger
+	httpClient   *http.Client
+}
+
+func NewReader(dbCollection *mongo.Collection, logger *log.Logger) *Reader {
+	// timeout to prevent waiting too long for requests
+	httpClient := &http.Client{
+		Timeout: 4 * time.Second,
+	}
+
+	return &Reader{
+		dbCollection: dbCollection,
+		logger:       logger,
+		httpClient:   httpClient,
+	}
+}
 
 var wg sync.WaitGroup
 
-func RunCronFeedReader(dbCollection *mongo.Collection) error {
+func (r *Reader) RunCronFeedReader() error {
 	s := gocron.NewScheduler(time.UTC)
-	_, err := s.Every(5).Seconds().Do(feedNewsIntoDb, dbCollection)
+	_, err := s.Every(CRON_JOB_INTERVAL_MS).Milliseconds().Do(r.feedNewsIntoDb)
 	if err != nil {
 		return err
 	}
@@ -34,17 +55,17 @@ func RunCronFeedReader(dbCollection *mongo.Collection) error {
 	return nil
 }
 
-func feedNewsIntoDb(dbCollection *mongo.Collection) {
-	newsListIds, err := getNewsList()
+func (r *Reader) feedNewsIntoDb() {
+	newsListIds, err := r.getNewsList()
 	if err != nil {
-		fmt.Println("Error getting news list:", err)
+		r.logger.Printf("Error getting news list: %v", err)
 		return
 	}
 
 	articleIDChan := make(chan int)
 
 	for i := 0; i < WORKERS; i++ {
-		go processArticles(articleIDChan, dbCollection)
+		go r.processArticles(articleIDChan, r.dbCollection)
 	}
 
 	for _, articleId := range newsListIds {
@@ -56,11 +77,12 @@ func feedNewsIntoDb(dbCollection *mongo.Collection) {
 	wg.Wait()
 }
 
-func processArticles(articleIDChan <-chan int, dbCollection *mongo.Collection) {
+func (r *Reader) processArticles(articleIDChan <-chan int, dbCollection *mongo.Collection) {
 	for articleID := range articleIDChan {
-		article, err := getFullArticle(articleID)
+		article, err := r.getFullArticle(articleID)
 		if err != nil {
-			fmt.Printf("Error getting article with id:%d and error: %v\n", articleID, err)
+			r.logger.Printf("Error getting article with id:%d and error: %v\n", articleID, err)
+			wg.Done()
 			continue
 		}
 
@@ -68,57 +90,56 @@ func processArticles(articleIDChan <-chan int, dbCollection *mongo.Collection) {
 		filter := bson.D{{Key: NEWS_ARTICLE_KEY, Value: articleID}}
 		_, err = dbCollection.ReplaceOne(context.TODO(), filter, ConvertToMongoDB(article), opts)
 		if err != nil {
-			fmt.Printf("Error saving article with id:%d and error: %v\n", articleID, err)
+			r.logger.Printf("Error saving article with id:%d and error: %v\n", articleID, err)
 		}
 		wg.Done()
 	}
 }
 
-func getNewsList() ([]NewsletterNewsItem, error) {
+func (r *Reader) getNewsList() ([]NewsletterNewsItem, error) {
 	response, err := http.Get(ALL_ARTICLES_FEED)
 	if err != nil {
-		fmt.Println("Error fetching the URL:", err)
+		r.logger.Printf("Error fetching the URL: %v", err)
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	body, err := ioutil.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println("Error reading response:", err)
+		r.logger.Printf("Error reading response: %v", err)
 		return nil, err
 	}
 
 	var newsList NewListInformation
 	err = xml.Unmarshal(body, &newsList)
 	if err != nil {
-		fmt.Println("Error unmarshaling XML:", err)
+		r.logger.Printf("Error unmarshaling XML: %v", err)
 		return nil, err
 	}
 	return newsList.NewsletterNewsItems, nil
 }
 
-func getFullArticle(articleID int) (*NewsArticleInformationXML, error) {
+func (r *Reader) getFullArticle(articleID int) (*NewsArticleInformationXML, error) {
 	url := fmt.Sprintf("%s%d", ONE_ARTICLE_FEED, articleID)
 
 	response, err := http.Get(url)
 	if err != nil {
-		fmt.Printf("Error fetching full article with id:%d and error: %v", articleID, err)
+		r.logger.Printf("Error fetching full article with id:%d and error: %v", articleID, err)
 		return nil, err
 	}
 	defer response.Body.Close()
 
-	body, err := ioutil.ReadAll(response.Body)
+	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		fmt.Println("Error reading response:", err)
+		r.logger.Printf("Error reading response: %v", err)
 		return nil, err
 	}
 
 	var article NewsArticleInformationXML
 	err = xml.Unmarshal(body, &article)
 	if err != nil {
-		fmt.Println("Error unmarshaling XML:", err)
+		r.logger.Printf("Error unmarshaling XML: %v", err)
 		return nil, err
 	}
 	return &article, nil
-
 }
