@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -21,8 +23,15 @@ var logger *log.Logger
 var articleRepository database.ArticleRepository
 
 func main() {
+	logger := log.New(os.Stdout, "", log.LstdFlags)
+
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		logger.Fatal("MONGO_URI environment variable is not set")
+		return
+	}
 	// Initialize MongoDB client or connection pool
-	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017/")
+	clientOptions := options.Client().ApplyURI(mongoURI)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Fatal(err)
@@ -31,14 +40,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	//init collection and document
 	collection := client.Database("news_feed").Collection("news")
 	articleRepository = &database.MongoDBArticleRepository{
 		Collection: collection,
 		Logger:     logger,
 	}
 
+	//set timeout on default http client and pass it to the feed reader
+	http.DefaultClient.Timeout = 4 * time.Second
 	r := reader.NewReader(articleRepository, logger, http.DefaultClient)
 
+	//run our cron job to poll data from feed
 	err = r.RunCronFeedReader()
 	if err != nil {
 		logger.Fatalf("Error running cron feed reader: %v", err)
@@ -101,6 +114,7 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 	handleSuccess(w, http.StatusOK, responseObj)
 }
 
+// generic error handler
 func handleError(w http.ResponseWriter, statusCode int, message string, err error) {
 	logger.Printf("Error: %v", err)
 	responseObj := models.NewsArticlesResponse{
@@ -115,6 +129,7 @@ func handleError(w http.ResponseWriter, statusCode int, message string, err erro
 	}
 }
 
+// generic success handler
 func handleSuccess(w http.ResponseWriter, statusCode int, responseObj interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)

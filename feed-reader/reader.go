@@ -33,10 +33,6 @@ type Reader struct {
 }
 
 func NewReader(db database.ArticleRepository, logger *log.Logger, httpClient HTTPClient) *Reader {
-	// timeout to prevent waiting too long for requests
-	// httpClient = &http.Client{
-	// 	Timeout: 4 * time.Second,
-	// }
 
 	return &Reader{
 		db:         db,
@@ -46,6 +42,7 @@ func NewReader(db database.ArticleRepository, logger *log.Logger, httpClient HTT
 }
 
 func (r *Reader) RunCronFeedReader() error {
+	// run a cron every interval in milliseconds
 	s := gocron.NewScheduler(time.UTC)
 	_, err := s.Every(CRON_JOB_INTERVAL_MS).Milliseconds().Do(r.feedNewsIntoDb)
 	if err != nil {
@@ -57,14 +54,17 @@ func (r *Reader) RunCronFeedReader() error {
 
 func (r *Reader) feedNewsIntoDb() {
 	var wg sync.WaitGroup
+	//read news feed
 	newsListIds, err := r.getNewsList()
 	if err != nil {
 		r.logger.Printf("Error getting news list: %v", err)
 		return
 	}
 
+	//create a buffered channel of the number of workers set
 	articleIDChan := make(chan int, WORKERS)
 
+	// sync process all articles from feed at the same time
 	for i := 0; i < WORKERS; i++ {
 		go r.processArticles(articleIDChan, r.db, &wg)
 	}
@@ -94,6 +94,7 @@ func (r *Reader) processArticles(articleIDChan <-chan int, db database.ArticleRe
 	}
 }
 
+// reading from feed and transforming xml into structs
 func (r *Reader) getNewsList() ([]models.NewsletterNewsItem, error) {
 	response, err := r.httpClient.Get(ALL_ARTICLES_FEED)
 	if err != nil {
@@ -117,6 +118,7 @@ func (r *Reader) getNewsList() ([]models.NewsletterNewsItem, error) {
 	return newsList.NewsletterNewsItems, nil
 }
 
+// reading from feed and transforming xml into structs
 func (r *Reader) getFullArticle(articleID int) (*models.NewsArticleInformationXML, error) {
 	url := fmt.Sprintf("%s%d", ONE_ARTICLE_FEED, articleID)
 
