@@ -1,9 +1,9 @@
 package main
 
 import (
-	"alibazlamit/feed-reader/database"
-	reader "alibazlamit/feed-reader/feed-reader"
-	"alibazlamit/feed-reader/models"
+	"alibazlamit/feed-provider/database"
+	reader "alibazlamit/feed-provider/feed-reader"
+	"alibazlamit/feed-provider/models"
 	"context"
 	"encoding/json"
 	"fmt"

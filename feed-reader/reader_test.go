@@ -1,7 +1,7 @@
 package reader
 
 import (
-	"alibazlamit/feed-reader/database"
+	"alibazlamit/feed-provider/database"
 	"fmt"
 	"io/ioutil"
 	"log"

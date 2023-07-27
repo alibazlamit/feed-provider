@@ -1,19 +1,19 @@
-# Use an official Golang runtime as the base image
-FROM golang:1.19.0-alpine3.16 as builder
+# Use the official Golang image as the base image
+FROM golang:1.16-alpine
 
 # Set the working directory inside the container
 WORKDIR /app
 
-# Copy the Go modules files and download dependencies
-COPY go.mod go.sum . /
-RUN go mod download
-
-# Copy the rest of the project files
+# Copy the necessary files to the working directory
+COPY go.mod go.sum ./
+COPY main.go ./
 COPY . .
 
 # Build the Go application
-RUN CGO_ENABLED=0 GOOS=linux go build -o ./feed-reader/main.go
-# RUN go build -o feed-reader.
+RUN go build -o feed-provider ./main.go
+
+# Expose the port that the application listens on
 EXPOSE 8080
-# Set the entrypoint command to run the Go application
-CMD ["./feed-reader"]
+
+# Set the entrypoint command to run the application
+CMD ["./feed-provider"]

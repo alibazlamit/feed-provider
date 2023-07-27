@@ -1,9 +1,7 @@
-// database/mongodb_article_repository.go
-
 package database
 
 import (
-	"alibazlamit/feed-reader/models"
+	"alibazlamit/feed-provider/models"
 	"context"
 	"log"
 

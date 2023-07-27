@@ -1,9 +1,7 @@
-// mock_article_repository.go
-
 package database
 
 import (
-	"alibazlamit/feed-reader/models"
+	"alibazlamit/feed-provider/models"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
