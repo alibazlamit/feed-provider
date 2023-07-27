@@ -3,6 +3,7 @@ package main
 import (
 	"alibazlamit/feed-reader/database"
 	reader "alibazlamit/feed-reader/feed-reader"
+	"alibazlamit/feed-reader/models"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,15 +12,34 @@ import (
 
 	"github.com/gorilla/mux"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var ctx = context.TODO()
 var logger *log.Logger
+var articleRepository database.ArticleRepository
 
 func main() {
-	r := reader.NewReader(database.InitDatabase(), logger)
+	// Initialize MongoDB client or connection pool
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017/")
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	collection := client.Database("news_feed").Collection("news")
+	articleRepository = &database.MongoDBArticleRepository{
+		Collection: collection,
+		Logger:     logger,
+	}
 
-	err := r.RunCronFeedReader()
+	r := reader.NewReader(articleRepository, logger, http.DefaultClient)
+
+	err = r.RunCronFeedReader()
 	if err != nil {
 		logger.Fatalf("Error running cron feed reader: %v", err)
 	}
@@ -44,16 +64,16 @@ func main() {
 
 // GetAllArticles returns all articles from the MongoDB database in JSON format
 func getAllArticles(w http.ResponseWriter, r *http.Request) {
-	responseObj := reader.NewsArticlesResponse{
-		Status: string(reader.Failure),
+	responseObj := models.NewsArticlesResponse{
+		Status: string(models.Failure),
 	}
-	articles, err := database.GetAllArticlesFromDB()
+	articles, err := articleRepository.GetAllArticles()
 	if err != nil {
 		handleError(w, http.StatusBadRequest, "Error retrieving articles", err)
 	}
-	responseObj = reader.NewsArticlesResponse{
+	responseObj = models.NewsArticlesResponse{
 		Data:   articles,
-		Status: string(reader.Success),
+		Status: string(models.Success),
 	}
 
 	handleSuccess(w, http.StatusOK, responseObj)
@@ -69,13 +89,13 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	article, err := database.GetArticleByIDFromDB(objectID)
+	article, err := articleRepository.GetArticleByID(objectID)
 	if err != nil {
 		handleError(w, http.StatusBadRequest, "Error retrieving article", err)
 	}
 
-	responseObj := reader.NewsArticleResponse{
-		Status: string(reader.Success),
+	responseObj := models.NewsArticleResponse{
+		Status: string(models.Success),
 		Data:   *article,
 	}
 	handleSuccess(w, http.StatusOK, responseObj)
@@ -83,9 +103,9 @@ func getArticleByID(w http.ResponseWriter, r *http.Request) {
 
 func handleError(w http.ResponseWriter, statusCode int, message string, err error) {
 	logger.Printf("Error: %v", err)
-	responseObj := reader.NewsArticlesResponse{
+	responseObj := models.NewsArticlesResponse{
 		Error:  message,
-		Status: string(reader.Failure),
+		Status: string(models.Failure),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

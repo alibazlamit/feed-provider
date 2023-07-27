@@ -1,7 +1,8 @@
 package reader
 
 import (
-	"context"
+	"alibazlamit/feed-reader/database"
+	"alibazlamit/feed-reader/models"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -11,39 +12,38 @@ import (
 	"time"
 
 	"github.com/go-co-op/gocron"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const (
 	NEWS_ARTICLE_KEY     = "NewsArticleID"
 	ALL_ARTICLES_FEED    = "https://www.htafc.com/api/incrowd/getnewlistinformation?count=50"
 	ONE_ARTICLE_FEED     = "https://www.htafc.com/api/incrowd/getnewsarticleinformation?id="
-	WORKERS              = 3
+	WORKERS              = 5
 	CRON_JOB_INTERVAL_MS = 300000
 )
 
-type Reader struct {
-	dbCollection *mongo.Collection
-	logger       *log.Logger
-	httpClient   *http.Client
+type HTTPClient interface {
+	Get(url string) (*http.Response, error)
 }
 
-func NewReader(dbCollection *mongo.Collection, logger *log.Logger) *Reader {
+type Reader struct {
+	db         database.ArticleRepository
+	logger     *log.Logger
+	httpClient HTTPClient
+}
+
+func NewReader(db database.ArticleRepository, logger *log.Logger, httpClient HTTPClient) *Reader {
 	// timeout to prevent waiting too long for requests
-	httpClient := &http.Client{
-		Timeout: 4 * time.Second,
-	}
+	// httpClient = &http.Client{
+	// 	Timeout: 4 * time.Second,
+	// }
 
 	return &Reader{
-		dbCollection: dbCollection,
-		logger:       logger,
-		httpClient:   httpClient,
+		db:         db,
+		logger:     logger,
+		httpClient: httpClient,
 	}
 }
-
-var wg sync.WaitGroup
 
 func (r *Reader) RunCronFeedReader() error {
 	s := gocron.NewScheduler(time.UTC)
@@ -56,16 +56,17 @@ func (r *Reader) RunCronFeedReader() error {
 }
 
 func (r *Reader) feedNewsIntoDb() {
+	var wg sync.WaitGroup
 	newsListIds, err := r.getNewsList()
 	if err != nil {
 		r.logger.Printf("Error getting news list: %v", err)
 		return
 	}
 
-	articleIDChan := make(chan int)
+	articleIDChan := make(chan int, WORKERS)
 
 	for i := 0; i < WORKERS; i++ {
-		go r.processArticles(articleIDChan, r.dbCollection)
+		go r.processArticles(articleIDChan, r.db, &wg)
 	}
 
 	for _, articleId := range newsListIds {
@@ -77,7 +78,7 @@ func (r *Reader) feedNewsIntoDb() {
 	wg.Wait()
 }
 
-func (r *Reader) processArticles(articleIDChan <-chan int, dbCollection *mongo.Collection) {
+func (r *Reader) processArticles(articleIDChan <-chan int, db database.ArticleRepository, wg *sync.WaitGroup) {
 	for articleID := range articleIDChan {
 		article, err := r.getFullArticle(articleID)
 		if err != nil {
@@ -85,10 +86,7 @@ func (r *Reader) processArticles(articleIDChan <-chan int, dbCollection *mongo.C
 			wg.Done()
 			continue
 		}
-
-		opts := options.Replace().SetUpsert(true)
-		filter := bson.D{{Key: NEWS_ARTICLE_KEY, Value: articleID}}
-		_, err = dbCollection.ReplaceOne(context.TODO(), filter, ConvertToMongoDB(article), opts)
+		err = r.db.AddOrUpdateArticle(articleID, article)
 		if err != nil {
 			r.logger.Printf("Error saving article with id:%d and error: %v\n", articleID, err)
 		}
@@ -96,8 +94,8 @@ func (r *Reader) processArticles(articleIDChan <-chan int, dbCollection *mongo.C
 	}
 }
 
-func (r *Reader) getNewsList() ([]NewsletterNewsItem, error) {
-	response, err := http.Get(ALL_ARTICLES_FEED)
+func (r *Reader) getNewsList() ([]models.NewsletterNewsItem, error) {
+	response, err := r.httpClient.Get(ALL_ARTICLES_FEED)
 	if err != nil {
 		r.logger.Printf("Error fetching the URL: %v", err)
 		return nil, err
@@ -110,7 +108,7 @@ func (r *Reader) getNewsList() ([]NewsletterNewsItem, error) {
 		return nil, err
 	}
 
-	var newsList NewListInformation
+	var newsList models.NewListInformation
 	err = xml.Unmarshal(body, &newsList)
 	if err != nil {
 		r.logger.Printf("Error unmarshaling XML: %v", err)
@@ -119,10 +117,10 @@ func (r *Reader) getNewsList() ([]NewsletterNewsItem, error) {
 	return newsList.NewsletterNewsItems, nil
 }
 
-func (r *Reader) getFullArticle(articleID int) (*NewsArticleInformationXML, error) {
+func (r *Reader) getFullArticle(articleID int) (*models.NewsArticleInformationXML, error) {
 	url := fmt.Sprintf("%s%d", ONE_ARTICLE_FEED, articleID)
 
-	response, err := http.Get(url)
+	response, err := r.httpClient.Get(url)
 	if err != nil {
 		r.logger.Printf("Error fetching full article with id:%d and error: %v", articleID, err)
 		return nil, err
@@ -135,7 +133,7 @@ func (r *Reader) getFullArticle(articleID int) (*NewsArticleInformationXML, erro
 		return nil, err
 	}
 
-	var article NewsArticleInformationXML
+	var article models.NewsArticleInformationXML
 	err = xml.Unmarshal(body, &article)
 	if err != nil {
 		r.logger.Printf("Error unmarshaling XML: %v", err)

@@ -1,4 +1,4 @@
-package reader
+package models
 
 import (
 	"encoding/xml"
